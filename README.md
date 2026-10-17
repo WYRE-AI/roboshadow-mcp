@@ -19,17 +19,34 @@ Two separate claims here, at deliberately different confidence levels - the two-
 - **Structurally verified (checked directly, stated with full confidence):** this connector's own code makes zero mutating calls against RoboShadow's data API. Every function in `client.ts` that reads organisation data calls one of the 40 dedicated GET operations in the published spec; the only non-GET call anywhere in `src/` is the bearer-token exchange itself, and it is never exposed as an MCP tool.
 - **Vendor-documented, not independently verified (hedged deliberately):** RoboShadow's own OpenAPI spec defines no write/mutate endpoint for organisation data anywhere - there is no scoped, read-only variant of the Bearer/Refresh Token to request instead, because the full token grants exactly the same access the vendor's own spec grants: reads only. Whether some other, undocumented part of the RoboShadow platform (outside this Organisation-Endpoints spec) accepts write calls under the same token has not been tested by WYRE - only that this spec, and this connector, expose none.
 
-In gateway mode the refresh token arrives per-request via the `X-RoboShadow-Refresh-Token` header; in local/stdio mode it's read once from `ROBOSHADOW_REFRESH_TOKEN`.
+In gateway mode the refresh token arrives per-request via the `X-RoboShadow-Refresh-Token` header and a missing header is rejected; the server does not fall back to `ROBOSHADOW_REFRESH_TOKEN`. In local/stdio mode that variable is read from the environment. HTTP mode also requires the `X-Gateway-S2S` signature described below.
 
 ## Configuration
 
 | Env var | Description |
 |---|---|
-| `ROBOSHADOW_REFRESH_TOKEN` | RoboShadow Refresh Token (Reports -> API Token in the portal). |
+| `ROBOSHADOW_REFRESH_TOKEN` | RoboShadow Refresh Token (Reports -> API Token in the portal). Required for stdio and for `AUTH_MODE=env`. Not read in gateway mode. |
 | `MCP_TRANSPORT` | `stdio` (default) or `http`. |
-| `AUTH_MODE` | `env` (default, reads the var above) or `gateway` (credential arrives per-request via the `X-RoboShadow-Refresh-Token` header, injected by the Conduit gateway). |
-| `CONDUIT_S2S_SECRET` | When set, the HTTP transport requires a valid `X-Gateway-S2S` header (Conduit sidecar auth) on every `/mcp` request. |
+| `AUTH_MODE` | `env` (default, reads the var above) or `gateway` (credential arrives per-request via the `X-RoboShadow-Refresh-Token` header, injected by the Conduit gateway). Gateway mode returns 401 when that header is missing and never falls back to `ROBOSHADOW_REFRESH_TOKEN`. The container image and Compose default to `gateway`. |
+| `CONDUIT_S2S_SECRET` | Required to start the HTTP transport. HMAC secret checked against `X-Gateway-S2S` on every `/mcp` request. If empty or a known placeholder (`changeme`, `your-s2s-secret`, and the other public examples), the process logs an error and exits non-zero. The value is never logged. Compose will not start when it is unset. |
+| `MCP_ALLOW_INSECURE_DEV` | Set to exactly `1` only for local development, to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, does not check `X-Gateway-S2S`, and binds `127.0.0.1` only. A wider `MCP_HTTP_HOST` (including `0.0.0.0`) is ignored. A known placeholder secret is still refused. |
+| `MCP_HTTP_HOST` | Bind address when `MCP_TRANSPORT=http`. Defaults to `127.0.0.1`. Honored only when `CONDUIT_S2S_SECRET` is set. The container image sets `0.0.0.0`. |
+| `MCP_HTTP_PORT` | HTTP port. Defaults to `8080`. |
 | `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error`. |
+
+`/health` stays unauthenticated and does not read credentials. The stdio transport does not use `CONDUIT_S2S_SECRET`.
+
+### X-Gateway-S2S
+
+With `MCP_TRANSPORT=http` and `CONDUIT_S2S_SECRET` set, every `/mcp` request must include a gateway-signed `X-Gateway-S2S` header:
+
+```
+X-Gateway-S2S: t=<unix seconds>,v1=<hex hmac-sha256>
+```
+
+`v1` is HMAC-SHA256 of the literal string `t=<unix seconds>` (the same `t=` prefix and value that appear in the header), keyed with `CONDUIT_S2S_SECRET`, and encoded as lowercase hex. The timestamp must be within 300 seconds of the server clock. A missing or invalid header returns 401 and the handler does not read vendor credentials.
+
+In `AUTH_MODE=gateway`, `/mcp` also requires `X-RoboShadow-Refresh-Token`. A missing or empty header returns 401. The server does not fall back to `ROBOSHADOW_REFRESH_TOKEN` in the process environment.
 
 ## Tools
 
@@ -116,9 +133,37 @@ npm run lint   # tsc --noEmit
 
 ## Docker
 
+The image listens on `0.0.0.0` inside the container (`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Startup still refuses to run unless `CONDUIT_S2S_SECRET` is a real secret. Publish the port on loopback. In gateway mode the refresh token arrives on each request as `X-RoboShadow-Refresh-Token`; it is not read from the environment.
+
 ```bash
 docker build -t roboshadow-mcp .
-docker run -p 8080:8080 -e ROBOSHADOW_REFRESH_TOKEN=... roboshadow-mcp
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -p 127.0.0.1:8080:8080 \
+  roboshadow-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset, defaults `AUTH_MODE` to `gateway`, publishes `127.0.0.1:8080:8080`, and does not set `ROBOSHADOW_REFRESH_TOKEN`:
+
+```bash
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses `ROBOSHADOW_REFRESH_TOKEN`:
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -e AUTH_MODE=env \
+  -e ROBOSHADOW_REFRESH_TOKEN="$ROBOSHADOW_REFRESH_TOKEN" \
+  -p 127.0.0.1:8080:8080 \
+  roboshadow-mcp
+```
+
+Local HTTP without a secret is development-only. It binds `127.0.0.1` even if `MCP_HTTP_HOST` is `0.0.0.0`, and logs a warning:
+
+```bash
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 npm run start:http
 ```
 
 ## License
