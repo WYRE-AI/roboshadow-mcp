@@ -48,6 +48,13 @@ X-Gateway-S2S: t=<unix seconds>,v1=<hex hmac-sha256>
 
 In `AUTH_MODE=gateway`, `/mcp` also requires `X-RoboShadow-Refresh-Token`. A missing or empty header returns 401. The server does not fall back to `ROBOSHADOW_REFRESH_TOKEN` in the process environment.
 
+### Request limits
+
+- HTTP request bodies are capped at 256 KiB (262144 bytes). After the `X-Gateway-S2S` check passes, a `Content-Length` above the cap returns 413 with a JSON-RPC error; bodies without `Content-Length` are capped by the MCP SDK transport. Unauthenticated requests still get 401 first.
+- `tools/call` arguments are capped at 10,000 elements (every array item and object key at any depth). Larger inputs return an `isError` tool result and are never dispatched.
+
+These limits address CVE-2026-111768 / GHSA-46jr-4wx8-v453 (memory exhaustion during validation) and GHSA-f897-62hf-6gxq (no request body / batch cap).
+
 ## Tools
 
 40 read-only tools, one per GET operation in the Rubicon Platform Data API's published spec. Every tool that reads organisation-scoped data takes `organisationId` - discover it with `roboshadow_list_organisations`.
