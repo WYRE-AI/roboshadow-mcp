@@ -6,6 +6,14 @@ Per-version release notes for tagged releases are published on the [GitHub Relea
 
 ## [Unreleased]
 
+### Fixed
+
+- **The HTTP transport no longer exits on a malformed request (WYREAI-741).** The request
+  target was parsed against the client-supplied `Host` header, and a value that does not parse
+  (or a target such as `//`) threw inside the request listener before authentication. The
+  target is now parsed against a fixed base, so `Host` is no longer consulted, and a target
+  that still cannot be parsed gets a `400` JSON response while the server keeps running.
+
 ### Added
 
 - Initial v1 release: 40 read-only tools covering every GET operation in RoboShadow's Rubicon Platform Data API (endpoint security - antivirus, Windows Defender, firewall; asset/hardware inventory; applications; users; vulnerabilities; remediation status). The published spec defines no write/create/update/delete endpoint for organisation data anywhere - the only non-GET operation in the entire spec is the vendor's own bearer-token-refresh exchange (`POST /identity/bearertoken`), which this connector calls internally to keep its access token fresh and never exposes as a tool. Authenticates with a RoboShadow Refresh Token (Reports -> API Token in the portal), exchanged internally for a short-lived Bearer Token before each call. See README's Scope and Authentication sections for the full two-tier confidence split.
